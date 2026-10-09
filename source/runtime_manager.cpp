@@ -159,7 +159,7 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 				native_list->ResourceBarrier(1, &to_rtv);
 
 			reshade::d3d12::command_list_impl reshade_list(device, native_list);
-			runtime->render_effects(&reshade_list, rtv, 0);
+			runtime->render_effects(&reshade_list, rtv, {});
 
 			if (needs_transition)
 			{
