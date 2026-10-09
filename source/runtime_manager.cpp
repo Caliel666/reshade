@@ -22,7 +22,7 @@ static std::unordered_set<reshade::runtime *> s_runtime_instances;
 
 namespace
 {
-	std::atomic<bool> s_pre_upscale_frame_pending = false;
+	std::atomic<uint64_t> s_pre_upscale_swapchain_native = 0;
 	std::atomic_flag s_logged_pre_upscale_addons = ATOMIC_FLAG_INIT;
 
 	class pre_upscale_swapchain final : public reshade::api::swapchain
@@ -151,9 +151,12 @@ void reshade::present_effect_runtime(api::swapchain *swapchain, bool render_effe
 		runtime->on_present(render_effects);
 }
 
-bool reshade::consume_pre_upscale_frame()
+bool reshade::consume_pre_upscale_frame(api::swapchain *swapchain)
 {
-	return s_pre_upscale_frame_pending.exchange(false, std::memory_order_acq_rel);
+	if (swapchain == nullptr)
+		return false;
+	uint64_t expected = swapchain->get_native();
+	return s_pre_upscale_swapchain_native.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
 }
 
 bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void *resource_ptr, uint32_t ffx_resource_state)
@@ -265,7 +268,7 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 
 			device->destroy_resource_view(rtv);
 			rendered = true;
-			s_pre_upscale_frame_pending.store(true, std::memory_order_release);
+			s_pre_upscale_swapchain_native.store(runtime->get_swapchain()->get_native(), std::memory_order_release);
 			break;
 		}
 	}
