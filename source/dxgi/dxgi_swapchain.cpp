@@ -976,6 +976,10 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 
 	assert(_is_initialized);
 
+	// If the FSR dispatch already ran ReShade on the render-resolution input, avoid
+	// running image-processing add-ons or regular effects a second time on the upscaled swapchain.
+	const bool pre_upscale_frame = reshade::consume_pre_upscale_frame();
+
 	// Synchronize access to effect runtime to avoid race conditions between 'load_effects' and 'destroy_effects' causing crashes
 	// This is necessary because Resident Evil 3 calls D3D11 and DXGI functions simultaneously from multiple threads
 	// In case of D3D12, also synchronize access to the command queue while events are invoked and the immediate command list may be accessed
@@ -990,7 +994,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)),
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)));
 
-		reshade::invoke_addon_event<reshade::addon_event::present>(
+		if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)),
 			_impl,
 			nullptr,
@@ -998,7 +1002,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			params != nullptr ? params->DirtyRectsCount : 0,
 			params != nullptr ? reinterpret_cast<const reshade::api::rect *>(params->pDirtyRects) : nullptr);
 #endif
-		reshade::present_effect_runtime(_impl);
+		reshade::present_effect_runtime(_impl, !pre_upscale_frame);
 		break;
 	case reshade::api::device_api::d3d11:
 #if RESHADE_ADDON
