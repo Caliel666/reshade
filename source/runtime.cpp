@@ -689,7 +689,7 @@ void reshade::runtime::on_reset()
 
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
-void reshade::runtime::on_present()
+void reshade::runtime::on_present(bool render_effects)
 {
 	if (!_is_initialized)
 		return;
@@ -734,7 +734,7 @@ void reshade::runtime::on_present()
 	if (_should_save_screenshot && _screenshot_save_before && _effects_enabled && !_effects_rendered_this_frame)
 		save_screenshot("Before");
 
-	if (!is_loading() && !_techniques.empty())
+	if (render_effects && !is_loading() && !_techniques.empty())
 	{
 		if (_back_buffer_resolved != 0)
 		{
@@ -888,7 +888,7 @@ void reshade::runtime::on_present()
 	}
 
 	// Stretch main render target back into MSAA back buffer if MSAA is active or copy when format conversion is required
-	if (_back_buffer_resolved != 0)
+	if (render_effects && _back_buffer_resolved != 0)
 	{
 		const api::resource resources[2] = { back_buffer_resource, _back_buffer_resolved };
 		const api::resource_usage state_old[2] = { api::resource_usage::copy_source | api::resource_usage::resolve_source, api::resource_usage::render_target };
