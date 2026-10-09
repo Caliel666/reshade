@@ -18,6 +18,7 @@ namespace
 	using ffx_fsr3_dispatch_fn = int (*)(void *context, void *dispatch_description);
 
 	std::atomic_flag s_scan_in_progress = ATOMIC_FLAG_INIT;
+	std::atomic<ULONGLONG> s_last_scan_tick = 0;
 	std::atomic_flag s_logged_dispatch = ATOMIC_FLAG_INIT;
 	std::atomic_flag s_logged_ffx_dispatch = ATOMIC_FLAG_INIT;
 	std::vector<void *> s_hooked_dispatches;
@@ -113,6 +114,14 @@ namespace
 
 void reshade::fsr_pre_upscale::update()
 {
+	// Present runs every frame. Avoid taking a module snapshot every frame;
+	// scan at most once per second to keep the disabled/idle path inexpensive.
+	const ULONGLONG now = GetTickCount64();
+	const ULONGLONG previous = s_last_scan_tick.load(std::memory_order_relaxed);
+	if (now - previous < 1000 ||
+		!s_last_scan_tick.compare_exchange_strong(const_cast<ULONGLONG &>(previous), now, std::memory_order_relaxed))
+		return;
+
 	if (s_scan_in_progress.test_and_set())
 		return;
 
