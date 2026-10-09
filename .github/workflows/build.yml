@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - feature/fsr-pre-upscale-reshade
   pull_request:
     branches:
       - main
+      - feature/fsr-pre-upscale-reshade
 
 permissions: {}
 
