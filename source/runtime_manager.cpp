@@ -23,6 +23,7 @@ static std::unordered_set<reshade::runtime *> s_runtime_instances;
 namespace
 {
 	std::atomic<bool> s_pre_upscale_frame_pending = false;
+	std::atomic_flag s_logged_pre_upscale_addons = ATOMIC_FLAG_INIT;
 
 	class pre_upscale_swapchain final : public reshade::api::swapchain
 	{
@@ -242,6 +243,8 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 				pre_upscale_command_queue external_queue(runtime->get_command_queue(), device, native_list);
 				reshade::invoke_addon_event<reshade::addon_event::present>(
 					&external_queue, &external_swapchain, nullptr, nullptr, 0, nullptr);
+				if (!s_logged_pre_upscale_addons.test_and_set())
+					reshade::log::message(reshade::log::level::info, "FSR pre-upscale: routed ReShade add-on present callbacks onto the FSR input command list.");
 
 				if (original_state != D3D12_RESOURCE_STATE_PRESENT)
 				{
