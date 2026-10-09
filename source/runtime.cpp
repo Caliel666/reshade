@@ -706,7 +706,7 @@ void reshade::runtime::on_present(bool render_effects)
 	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
 
 	// Resolve MSAA back buffer if MSAA is active or copy when format conversion is required
-	if (_back_buffer_resolved != 0)
+	if (render_effects && _back_buffer_resolved != 0)
 	{
 		if (_back_buffer_samples == 1)
 		{
