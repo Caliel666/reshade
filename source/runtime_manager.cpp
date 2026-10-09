@@ -154,15 +154,20 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 			to_rtv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			to_rtv.Transition.StateBefore = original_state;
 			to_rtv.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			native_list->ResourceBarrier(1, &to_rtv);
+			const bool needs_transition = original_state != D3D12_RESOURCE_STATE_RENDER_TARGET;
+			if (needs_transition)
+				native_list->ResourceBarrier(1, &to_rtv);
 
 			reshade::d3d12::command_list_impl reshade_list(device, native_list);
 			runtime->render_effects(&reshade_list, rtv, 0);
 
-			D3D12_RESOURCE_BARRIER back_to_srv = to_rtv;
-			back_to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			back_to_srv.Transition.StateAfter = original_state;
-			native_list->ResourceBarrier(1, &back_to_srv);
+			if (needs_transition)
+			{
+				D3D12_RESOURCE_BARRIER back_to_original = to_rtv;
+				back_to_original.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+				back_to_original.Transition.StateAfter = original_state;
+				native_list->ResourceBarrier(1, &back_to_original);
+			}
 
 			device->destroy_resource_view(rtv);
 			rendered = true;
