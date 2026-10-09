@@ -994,7 +994,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)),
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)));
 
-		if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
+		if (!pre_upscale_frame) if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)),
 			_impl,
 			nullptr,
@@ -1010,7 +1010,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			static_cast<D3D11Device *>(static_cast<ID3D11Device *>(_direct3d_device))->_immediate_context,
 			static_cast<D3D11Device *>(static_cast<ID3D11Device *>(_direct3d_device))->_immediate_context);
 
-		reshade::invoke_addon_event<reshade::addon_event::present>(
+		if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
 			static_cast<D3D11Device *>(static_cast<ID3D11Device *>(_direct3d_device))->_immediate_context,
 			_impl,
 			nullptr,
@@ -1018,11 +1018,11 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			params != nullptr ? params->DirtyRectsCount : 0,
 			params != nullptr ? reinterpret_cast<const reshade::api::rect *>(params->pDirtyRects) : nullptr);
 #endif
-		reshade::present_effect_runtime(_impl);
+		reshade::present_effect_runtime(_impl, !pre_upscale_frame);
 		break;
 	case reshade::api::device_api::d3d12:
 #if RESHADE_ADDON
-		reshade::invoke_addon_event<reshade::addon_event::present>(
+		if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
 			static_cast<D3D12CommandQueue *>(_direct3d_command_queue),
 			_impl,
 			nullptr,
@@ -1030,7 +1030,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			params != nullptr ? params->DirtyRectsCount : 0,
 			params != nullptr ? reinterpret_cast<const reshade::api::rect *>(params->pDirtyRects) : nullptr);
 #endif
-		reshade::present_effect_runtime(_impl);
+		reshade::present_effect_runtime(_impl, !pre_upscale_frame);
 		static_cast<D3D12CommandQueue *>(_direct3d_command_queue)->flush_immediate_command_list();
 		break;
 	}
