@@ -19,5 +19,5 @@ namespace reshade
 	// Execute the active ReShade runtime on an FSR render-resolution D3D12 color resource.
 	// Returns false when no compatible runtime/resource is available; the caller must then
 	// forward the original FSR dispatch unchanged.
-	bool render_effects_on_external_d3d12_resource(void *command_list, void *resource);
+	bool render_effects_on_external_d3d12_resource(void *command_list, void *resource, uint32_t ffx_resource_state);
 }
