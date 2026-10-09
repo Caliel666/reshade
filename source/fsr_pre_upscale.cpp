@@ -44,13 +44,13 @@ namespace
 		struct fsr31_dispatch_prefix
 		{
 			void *command_list;
-			struct { void *resource; } color;
+			struct { void *resource; uint32_t description[8]; uint32_t state; } color;
 		};
 		if (dispatch_description != nullptr)
 		{
 			const auto *dispatch = static_cast<const fsr31_dispatch_prefix *>(dispatch_description);
 			if (dispatch->command_list != nullptr && dispatch->color.resource != nullptr &&
-				reshade::render_effects_on_external_d3d12_resource(dispatch->command_list, dispatch->color.resource))
+				reshade::render_effects_on_external_d3d12_resource(dispatch->command_list, dispatch->color.resource, dispatch->color.state))
 				reshade::log::message(reshade::log::level::info, "FSR pre-upscale: ReShade effects recorded on FSR 3.1 input color before dispatch.");
 		}
 
@@ -70,7 +70,7 @@ namespace
 		// header is a 64-bit type followed by pNext. FSR upscale dispatch type is
 		// 0x00010001; its color resource follows the command-list pointer.
 		struct ffx_api_header_prefix { uint64_t type; void *next; };
-		struct ffx_api_resource_prefix { void *resource; };
+		struct ffx_api_resource_prefix { void *resource; uint32_t description[8]; uint32_t state; };
 		struct ffx_api_upscale_prefix
 		{
 			ffx_api_header_prefix header;
@@ -93,7 +93,7 @@ namespace
 			{
 				const auto *dispatch = static_cast<const ffx_api_upscale_prefix *>(dispatch_header);
 				if (dispatch->command_list != nullptr && dispatch->color.resource != nullptr &&
-					reshade::render_effects_on_external_d3d12_resource(dispatch->command_list, dispatch->color.resource))
+					reshade::render_effects_on_external_d3d12_resource(dispatch->command_list, dispatch->color.resource, dispatch->color.state))
 					reshade::log::message(reshade::log::level::info, "FSR pre-upscale: ReShade effects recorded on unified FFX upscale input color before dispatch.");
 			}
 		}
