@@ -169,18 +169,38 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 	auto *native_resource = static_cast<ID3D12Resource *>(resource_ptr);
 	const D3D12_RESOURCE_DESC native_desc = native_resource->GetDesc();
 
-	// ReShade's effect pipeline renders into an RTV. Do not try to fabricate one for
-	// textures that D3D12 explicitly forbids using as render targets.
+	// The add-on present path only needs a texture resource. ReShade's built-in
+	// effects additionally need ALLOW_RENDER_TARGET, so do not reject the entire
+	// FSR dispatch merely because the input texture cannot be an RTV.
 	if (native_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-		native_desc.SampleDesc.Count != 1 ||
-		(native_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
+		native_desc.SampleDesc.Count != 1)
 		return false;
 
 	ID3D12Device *native_device = nullptr;
 	if (FAILED(native_resource->GetDevice(IID_PPV_ARGS(&native_device))))
 		return false;
 
-	bool rendered = false;
+	// FidelityFX resource-state values: 0=COMMON, 1=UAV, 2=COMPUTE_READ,
+	// 3=PIXEL_READ, 4=COPY_SRC, 5=COPY_DST, 6=INDIRECT, 7=PRESENT, 8=RT.
+	D3D12_RESOURCE_STATES original_state = static_cast<D3D12_RESOURCE_STATES>(0);
+	if (ffx_resource_state & (1u << 2)) original_state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	if (ffx_resource_state & (1u << 3)) original_state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	if (ffx_resource_state & (1u << 4)) original_state |= D3D12_RESOURCE_STATE_COPY_SOURCE;
+	if (ffx_resource_state & (1u << 5)) original_state |= D3D12_RESOURCE_STATE_COPY_DEST;
+	if (ffx_resource_state & (1u << 1)) original_state |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	if (ffx_resource_state & (1u << 6)) original_state |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+	if (ffx_resource_state & (1u << 7)) original_state |= D3D12_RESOURCE_STATE_PRESENT;
+	if (ffx_resource_state & (1u << 8)) original_state |= D3D12_RESOURCE_STATE_RENDER_TARGET;
+	if (original_state == 0 && (ffx_resource_state & 1u)) original_state = D3D12_RESOURCE_STATE_COMMON;
+	if (original_state == 0)
+	{
+		reshade::log::message(reshade::log::level::warning,
+			"FSR pre-upscale: unsupported/unknown FFX input resource state 0x%08X; leaving dispatch untouched.", ffx_resource_state);
+		native_device->Release();
+		return false;
+	}
+
+	bool processed = false;
 	{
 		const std::shared_lock<std::shared_mutex> lock(s_runtime_instances_mutex);
 		for (reshade::runtime *runtime : s_runtime_instances)
@@ -192,45 +212,50 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 
 			auto *device = static_cast<reshade::d3d12::device_impl *>(runtime->get_device());
 			const reshade::api::resource api_resource { reinterpret_cast<uint64_t>(native_resource) };
-			reshade::api::resource_view rtv = {};
-			reshade::api::resource_view_desc view_desc = {};
-			if (!device->create_resource_view(api_resource, reshade::api::resource_usage::render_target, view_desc, &rtv))
-				continue;
 
-				// Translate FidelityFX's abstract resource-state bitmask to D3D12. The
-			// dispatch description supplies the state expected by the SDK backend.
-			D3D12_RESOURCE_STATES original_state = static_cast<D3D12_RESOURCE_STATES>(0);
-			if (ffx_resource_state & (1u << 2)) original_state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-			if (ffx_resource_state & (1u << 3)) original_state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-			if (ffx_resource_state & (1u << 4)) original_state |= D3D12_RESOURCE_STATE_COPY_SOURCE;
-			if (ffx_resource_state & (1u << 5)) original_state |= D3D12_RESOURCE_STATE_COPY_DEST;
-			if (ffx_resource_state & (1u << 1)) original_state |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-			if (ffx_resource_state & (1u << 6)) original_state |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-			if (ffx_resource_state & (1u << 7)) original_state |= D3D12_RESOURCE_STATE_PRESENT;
-			if (ffx_resource_state & (1u << 8)) original_state |= D3D12_RESOURCE_STATE_RENDER_TARGET;
-			if (original_state == 0 && (ffx_resource_state & 1u)) original_state = D3D12_RESOURCE_STATE_COMMON;
-			if (original_state == 0)
+			// Built-in ReShade effects need an RTV. Run them when the FSR input
+			// supports render-target usage, but keep add-on routing independent of it.
+			if ((native_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0)
 			{
-				device->destroy_resource_view(rtv);
-				continue;
+				reshade::api::resource_view rtv = {};
+				reshade::api::resource_view_desc view_desc = {};
+				if (device->create_resource_view(api_resource, reshade::api::resource_usage::render_target, view_desc, &rtv))
+				{
+					D3D12_RESOURCE_BARRIER to_rtv = {};
+					to_rtv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+					to_rtv.Transition.pResource = native_resource;
+					to_rtv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+					to_rtv.Transition.StateBefore = original_state;
+					to_rtv.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+					const bool needs_transition = original_state != D3D12_RESOURCE_STATE_RENDER_TARGET;
+					if (needs_transition)
+						native_list->ResourceBarrier(1, &to_rtv);
+
+					reshade::d3d12::command_list_impl reshade_list(device, native_list);
+					runtime->render_effects(&reshade_list, rtv, {});
+					processed = true;
+
+					if (needs_transition)
+					{
+						D3D12_RESOURCE_BARRIER back_to_original = to_rtv;
+						back_to_original.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+						back_to_original.Transition.StateAfter = original_state;
+						native_list->ResourceBarrier(1, &back_to_original);
+					}
+					device->destroy_resource_view(rtv);
+				}
+				else
+				{
+					reshade::log::message(reshade::log::level::warning,
+						"FSR pre-upscale: could not create an RTV for the input; built-in effects skipped, add-on callbacks will still be routed.");
+				}
+			}
+			else
+			{
+				reshade::log::message(reshade::log::level::info,
+					"FSR pre-upscale: input texture lacks ALLOW_RENDER_TARGET; built-in effects skipped, add-on callbacks remain eligible.");
 			}
 
-			// Record effects on the same command list so their writes are ordered before FSR.
-			D3D12_RESOURCE_BARRIER to_rtv = {};
-			to_rtv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			to_rtv.Transition.pResource = native_resource;
-			to_rtv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			to_rtv.Transition.StateBefore = original_state;
-			to_rtv.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			const bool needs_transition = original_state != D3D12_RESOURCE_STATE_RENDER_TARGET;
-			if (needs_transition)
-				native_list->ResourceBarrier(1, &to_rtv);
-
-			reshade::d3d12::command_list_impl reshade_list(device, native_list);
-			runtime->render_effects(&reshade_list, rtv, {});
-
-			// Route the legacy ReShade add-on 'present' event through the same native
-			// command list, but expose the FSR input as the swap chain's sole back buffer.
 #if RESHADE_ADDON
 			if (reshade::has_addon_event<reshade::addon_event::present>())
 			{
@@ -240,17 +265,21 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 				to_present.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 				to_present.Transition.StateBefore = original_state;
 				to_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-				if (original_state != D3D12_RESOURCE_STATE_PRESENT)
+				const bool needs_present_transition = original_state != D3D12_RESOURCE_STATE_PRESENT;
+				if (needs_present_transition)
 					native_list->ResourceBarrier(1, &to_present);
 
 				pre_upscale_swapchain external_swapchain(runtime->get_swapchain(), api_resource);
 				pre_upscale_command_queue external_queue(runtime->get_command_queue(), device, native_list);
 				reshade::invoke_addon_event<reshade::addon_event::present>(
 					&external_queue, &external_swapchain, nullptr, nullptr, 0, nullptr);
-				if (!s_logged_pre_upscale_addons.test_and_set())
-					reshade::log::message(reshade::log::level::info, "FSR pre-upscale: routed ReShade add-on present callbacks onto the FSR input command list.");
+				processed = true;
 
-				if (original_state != D3D12_RESOURCE_STATE_PRESENT)
+				if (!s_logged_pre_upscale_addons.test_and_set())
+					reshade::log::message(reshade::log::level::info,
+						"FSR pre-upscale: routed ReShade add-on present callbacks onto the FSR input command list.");
+
+				if (needs_present_transition)
 				{
 					D3D12_RESOURCE_BARRIER back_to_original = to_present;
 					back_to_original.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
@@ -258,21 +287,17 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 					native_list->ResourceBarrier(1, &back_to_original);
 				}
 			}
-#endif
-			if (needs_transition)
+			else if (!s_logged_pre_upscale_addons.test_and_set())
 			{
-				D3D12_RESOURCE_BARRIER back_to_original = to_rtv;
-				back_to_original.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-				back_to_original.Transition.StateAfter = original_state;
-				native_list->ResourceBarrier(1, &back_to_original);
+				reshade::log::message(reshade::log::level::warning,
+					"FSR pre-upscale: no ReShade add-on present callbacks are registered; checking built-in effects only.");
 			}
-
-			device->destroy_resource_view(rtv);
-			rendered = true;
-			s_pre_upscale_swapchain_native.store(runtime->get_swapchain()->get_native(), std::memory_order_release);
+#endif
+			if (processed)
+				s_pre_upscale_swapchain_native.store(runtime->get_swapchain()->get_native(), std::memory_order_release);
 			break;
 		}
 	}
 	native_device->Release();
-	return rendered;
+	return processed;
 }
