@@ -756,15 +756,18 @@ void reshade::runtime::on_present(bool render_effects)
 	_last_frame_duration = current_time - _last_present_time; _last_present_time = current_time;
 
 #if RESHADE_GUI
-	// Draw overlay
-	if (_is_vr)
-		draw_gui_vr();
-	else
-		draw_gui();
+	// Do not draw ReShade's swapchain overlay after FSR when this frame was already
+	// processed at render resolution. All image-affecting ReShade rendering stays pre-upscale.
+	if (render_effects)
+	{
+		if (_is_vr)
+			draw_gui_vr();
+		else
+			draw_gui();
 
-	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture != std::numeric_limits<size_t>::max() && _effects_enabled)))
-		save_screenshot("Overlay");
-
+		if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture != std::numeric_limits<size_t>::max() && _effects_enabled)))
+			save_screenshot("Overlay");
+	}
 	_block_input_next_frame = false;
 #endif
 
