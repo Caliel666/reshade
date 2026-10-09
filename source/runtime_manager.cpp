@@ -11,7 +11,6 @@
 #include <d3d12.h>
 #include <unordered_set>
 #include <cassert>
-#include <unordered_set>
 
 static std::shared_mutex s_runtime_config_names_mutex;
 static std::unordered_set<std::string> s_runtime_config_names;
@@ -93,7 +92,7 @@ void reshade::present_effect_runtime(api::swapchain *swapchain)
 		runtime->on_present();
 }
 
-bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void *resource_ptr)
+bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void *resource_ptr, uint32_t ffx_resource_state)
 {
 	if (command_list == nullptr || resource_ptr == nullptr)
 		return false;
@@ -130,13 +129,30 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 			if (!device->create_resource_view(api_resource, reshade::api::resource_usage::render_target, view_desc, &rtv))
 				continue;
 
-			// FSR's color input is normally in a shader-readable state before dispatch.
+				// Translate FidelityFX's abstract resource-state bitmask to D3D12. The
+			// dispatch description supplies the state expected by the SDK backend.
+			D3D12_RESOURCE_STATES original_state = static_cast<D3D12_RESOURCE_STATES>(0);
+			if (ffx_resource_state & (1u << 2)) original_state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			if (ffx_resource_state & (1u << 3)) original_state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+			if (ffx_resource_state & (1u << 4)) original_state |= D3D12_RESOURCE_STATE_COPY_SOURCE;
+			if (ffx_resource_state & (1u << 5)) original_state |= D3D12_RESOURCE_STATE_COPY_DEST;
+			if (ffx_resource_state & (1u << 1)) original_state |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			if (ffx_resource_state & (1u << 6)) original_state |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+			if (ffx_resource_state & (1u << 7)) original_state |= D3D12_RESOURCE_STATE_PRESENT;
+			if (ffx_resource_state & (1u << 8)) original_state |= D3D12_RESOURCE_STATE_RENDER_TARGET;
+			if (original_state == 0 && (ffx_resource_state & 1u)) original_state = D3D12_RESOURCE_STATE_COMMON;
+			if (original_state == 0)
+			{
+				device->destroy_resource_view(rtv);
+				continue;
+			}
+
 			// Record effects on the same command list so their writes are ordered before FSR.
 			D3D12_RESOURCE_BARRIER to_rtv = {};
 			to_rtv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			to_rtv.Transition.pResource = native_resource;
 			to_rtv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			to_rtv.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			to_rtv.Transition.StateBefore = original_state;
 			to_rtv.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			native_list->ResourceBarrier(1, &to_rtv);
 
@@ -145,7 +161,7 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 
 			D3D12_RESOURCE_BARRIER back_to_srv = to_rtv;
 			back_to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			back_to_srv.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			back_to_srv.Transition.StateAfter = original_state;
 			native_list->ResourceBarrier(1, &back_to_srv);
 
 			device->destroy_resource_view(rtv);
