@@ -19,6 +19,7 @@ namespace
 
 	std::atomic_flag s_scan_in_progress = ATOMIC_FLAG_INIT;
 	std::atomic_flag s_logged_dispatch = ATOMIC_FLAG_INIT;
+	std::atomic_flag s_logged_ffx_dispatch = ATOMIC_FLAG_INIT;
 	std::vector<void *> s_hooked_dispatches;
 
 	int ffx_fsr3_dispatch(void *context, void *dispatch_description)
@@ -42,31 +43,52 @@ namespace
 		return original(context, dispatch_description);
 	}
 
-	void inspect_module(HMODULE module)
+	int ffx_api_dispatch(void *dispatch_header)
 	{
-		if (module == nullptr)
-			return;
+		// The unified FFX API is used by newer integrations, including some FSR 4
+		// paths. Keep the header opaque and forward it without changing its chain.
+		if (!s_logged_ffx_dispatch.test_and_set())
+		{
+			reshade::log::message(
+				reshade::log::level::info,
+				"FSR pre-upscale: intercepted ffxDispatch (header=%p). Forwarding unchanged; effect execution is not enabled yet.",
+				dispatch_header);
+		}
 
-		const auto target = reinterpret_cast<void *>(
-			GetProcAddress(module, "ffxFsr3UpscalerContextDispatch"));
-		if (target == nullptr || target == reinterpret_cast<void *>(&ffx_fsr3_dispatch))
+		const auto original = reshade::hooks::call< int (*)(void *) >(
+			reinterpret_cast< int (*)(void *) >(&ffx_api_dispatch));
+		if (original == nullptr)
+			return -1;
+
+		return original(dispatch_header);
+	}
+
+	void try_hook_export(HMODULE module, const char *name, void *replacement, const char *description)
+	{
+		const auto target = reinterpret_cast<void *>(GetProcAddress(module, name));
+		if (target == nullptr || target == replacement)
 			return;
 
 		for (const void *hooked : s_hooked_dispatches)
 			if (hooked == target)
 				return;
 
-		if (reshade::hooks::install(
-			"ffxFsr3UpscalerContextDispatch",
-			target,
-			reinterpret_cast<void *>(&ffx_fsr3_dispatch)))
+		if (reshade::hooks::install(name, target, replacement))
 		{
 			s_hooked_dispatches.push_back(target);
-			reshade::log::message(
-				reshade::log::level::info,
-				"FSR pre-upscale: hooked FSR 3.1 dispatch export in module %p.",
-				module);
+			reshade::log::message(reshade::log::level::info, "FSR pre-upscale: hooked %s in module %p.", description, module);
 		}
+	}
+
+	void inspect_module(HMODULE module)
+	{
+		if (module == nullptr)
+			return;
+
+		try_hook_export(module, "ffxFsr3UpscalerContextDispatch",
+			reinterpret_cast<void *>(&ffx_fsr3_dispatch), "FSR 3.1 dispatch export");
+		try_hook_export(module, "ffxDispatch",
+			reinterpret_cast<void *>(&ffx_api_dispatch), "unified FFX dispatch export");
 	}
 
 	void scan_loaded_modules()
