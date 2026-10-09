@@ -27,9 +27,9 @@ namespace
 
 	int ffx_fsr3_dispatch(void *context, void *dispatch_description)
 	{
-		// The FSR 3.1 dispatch ABI is (context, dispatch-description). Keep the
-		// arguments opaque here so this hook never assumes a mismatched SDK layout.
-		// The actual dispatch must run exactly once and retain its original return code.
+		// The FSR 3.1 dispatch ABI is (context, dispatch-description). Read only the
+		// stable leading command-list/resource fields needed for the pre-upscale bridge;
+		// forward the complete descriptor unchanged to the original implementation.
 		if (!s_logged_dispatch.test_and_set())
 		{
 			reshade::log::message(
