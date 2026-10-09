@@ -9,6 +9,7 @@
 #include "d3d12/d3d12_impl_device.hpp"
 #include "d3d12/d3d12_impl_command_list.hpp"
 #include "addon_manager.hpp"
+#include "dll_log.hpp"
 #include <d3d12.h>
 #include <unordered_set>
 #include <cassert>
