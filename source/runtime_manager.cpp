@@ -8,6 +8,7 @@
 #include "ini_file.hpp"
 #include "d3d12/d3d12_impl_device.hpp"
 #include "d3d12/d3d12_impl_command_list.hpp"
+#include "addon_manager.hpp"
 #include <d3d12.h>
 #include <unordered_set>
 #include <cassert>
@@ -16,6 +17,62 @@ static std::shared_mutex s_runtime_config_names_mutex;
 static std::unordered_set<std::string> s_runtime_config_names;
 static std::shared_mutex s_runtime_instances_mutex;
 static std::unordered_set<reshade::runtime *> s_runtime_instances;
+
+
+namespace
+{
+	std::atomic<bool> s_pre_upscale_frame_pending = false;
+
+	class pre_upscale_swapchain final : public reshade::api::swapchain
+	{
+	public:
+		pre_upscale_swapchain(reshade::api::swapchain *original, reshade::api::resource back_buffer) :
+			_original(original), _back_buffer(back_buffer) {}
+
+		uint64_t get_native() const final { return _original->get_native(); }
+		void get_private_data(const uint8_t guid[16], uint64_t *data) const final { _original->get_private_data(guid, data); }
+		void set_private_data(const uint8_t guid[16], uint64_t data) final { _original->set_private_data(guid, data); }
+		reshade::api::device *get_device() final { return _original->get_device(); }
+		void *get_hwnd() const final { return _original->get_hwnd(); }
+		reshade::api::resource get_back_buffer(uint32_t index) final { return index == 0 ? _back_buffer : reshade::api::resource{}; }
+		uint32_t get_back_buffer_count() const final { return 1; }
+		uint32_t get_current_back_buffer_index() const final { return 0; }
+		bool check_color_space_support(reshade::api::color_space color_space) const final { return _original->check_color_space_support(color_space); }
+		reshade::api::color_space get_color_space() const final { return _original->get_color_space(); }
+
+	private:
+		reshade::api::swapchain *_original;
+		reshade::api::resource _back_buffer;
+	};
+
+	class pre_upscale_command_queue final : public reshade::api::command_queue
+	{
+	public:
+		pre_upscale_command_queue(reshade::api::command_queue *original, reshade::d3d12::device_impl *device, ID3D12GraphicsCommandList *native_list) :
+			_original(original), _command_list(device, native_list) {}
+
+		uint64_t get_native() const final { return _original->get_native(); }
+		void get_private_data(const uint8_t guid[16], uint64_t *data) const final { _original->get_private_data(guid, data); }
+		void set_private_data(const uint8_t guid[16], uint64_t data) final { _original->set_private_data(guid, data); }
+		reshade::api::device *get_device() final { return _original->get_device(); }
+		reshade::api::command_queue_type get_type() const final { return _original->get_type(); }
+		void wait_idle() const final { _original->wait_idle(); }
+		// The host owns this command list. Flushing here would submit/close a list
+		// that belongs to FSR, so callbacks record into it and let FSR submit it.
+		void flush_immediate_command_list() const final {}
+		reshade::api::command_list *get_immediate_command_list() final { return &_command_list; }
+		void begin_debug_event(const char *label, const float color[4]) final { _command_list.begin_debug_event(label, color); }
+		void end_debug_event() final { _command_list.end_debug_event(); }
+		void insert_debug_marker(const char *label, const float color[4]) final { _command_list.insert_debug_marker(label, color); }
+		bool wait(reshade::api::fence fence, uint64_t value) final { return _original->wait(fence, value); }
+		bool signal(reshade::api::fence fence, uint64_t value) final { return _original->signal(fence, value); }
+		uint64_t get_timestamp_frequency() const final { return _original->get_timestamp_frequency(); }
+
+	private:
+		reshade::api::command_queue *_original;
+		reshade::d3d12::command_list_impl _command_list;
+	};
+}
 
 void reshade::create_effect_runtime(api::swapchain *swapchain, api::command_queue *graphics_queue, bool vr)
 {
@@ -86,10 +143,15 @@ void reshade::reset_effect_runtime(api::swapchain *swapchain)
 	if (const auto runtime = swapchain->get_private_data<reshade::runtime>())
 		runtime->on_reset();
 }
-void reshade::present_effect_runtime(api::swapchain *swapchain)
+void reshade::present_effect_runtime(api::swapchain *swapchain, bool render_effects)
 {
 	if (const auto runtime = swapchain->get_private_data<reshade::runtime>())
-		runtime->on_present();
+		runtime->on_present(render_effects);
+}
+
+bool reshade::consume_pre_upscale_frame()
+{
+	return s_pre_upscale_frame_pending.exchange(false, std::memory_order_acq_rel);
 }
 
 bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void *resource_ptr, uint32_t ffx_resource_state)
@@ -161,6 +223,34 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 			reshade::d3d12::command_list_impl reshade_list(device, native_list);
 			runtime->render_effects(&reshade_list, rtv, {});
 
+			// Route the legacy ReShade add-on 'present' event through the same native
+			// command list, but expose the FSR input as the swap chain's sole back buffer.
+#if RESHADE_ADDON
+			if (reshade::has_addon_event<reshade::addon_event::present>())
+			{
+				D3D12_RESOURCE_BARRIER to_present = {};
+				to_present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				to_present.Transition.pResource = native_resource;
+				to_present.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				to_present.Transition.StateBefore = original_state;
+				to_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+				if (original_state != D3D12_RESOURCE_STATE_PRESENT)
+					native_list->ResourceBarrier(1, &to_present);
+
+				pre_upscale_swapchain external_swapchain(runtime->get_swapchain(), api_resource);
+				pre_upscale_command_queue external_queue(runtime->get_command_queue(), device, native_list);
+				reshade::invoke_addon_event<reshade::addon_event::present>(
+					&external_queue, &external_swapchain, nullptr, nullptr, 0, nullptr);
+
+				if (original_state != D3D12_RESOURCE_STATE_PRESENT)
+				{
+					D3D12_RESOURCE_BARRIER back_to_original = to_present;
+					back_to_original.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+					back_to_original.Transition.StateAfter = original_state;
+					native_list->ResourceBarrier(1, &back_to_original);
+				}
+			}
+#endif
 			if (needs_transition)
 			{
 				D3D12_RESOURCE_BARRIER back_to_original = to_rtv;
@@ -171,6 +261,7 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 
 			device->destroy_resource_view(rtv);
 			rendered = true;
+			s_pre_upscale_frame_pending.store(true, std::memory_order_release);
 			break;
 		}
 	}
