@@ -6,6 +6,8 @@
 #include "fsr_pre_upscale.hpp"
 #include "hook_manager.hpp"
 #include "dll_log.hpp"
+#include "runtime_manager.hpp"
+#include <d3d12.h>
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -32,8 +34,24 @@ namespace
 		{
 			reshade::log::message(
 				reshade::log::level::info,
-				"FSR pre-upscale: intercepted ffxFsr3UpscalerContextDispatch (context=%p, description=%p). Forwarding unchanged; effect execution is not enabled yet.",
+				"FSR pre-upscale: intercepted ffxFsr3UpscalerContextDispatch (context=%p, description=%p). forwarding dispatch after pre-upscale resource attempt.",
 				context, dispatch_description);
+		}
+
+		// FSR 3.1's dispatch description begins with commandList followed by the color
+		// FfxResource. Its first field is the native resource pointer. Execute ReShade
+		// on that render-resolution input before the original upscaler consumes it.
+		struct fsr31_dispatch_prefix
+		{
+			void *command_list;
+			struct { void *resource; } color;
+		};
+		if (dispatch_description != nullptr)
+		{
+			const auto *dispatch = static_cast<const fsr31_dispatch_prefix *>(dispatch_description);
+			if (dispatch->command_list != nullptr && dispatch->color.resource != nullptr &&
+				reshade::render_effects_on_external_d3d12_resource(dispatch->command_list, dispatch->color.resource))
+				reshade::log::message(reshade::log::level::info, "FSR pre-upscale: ReShade effects recorded on FSR 3.1 input color before dispatch.");
 		}
 
 		const auto original = reshade::hooks::call<ffx_fsr3_dispatch_fn>(
