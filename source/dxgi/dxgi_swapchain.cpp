@@ -978,7 +978,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 
 	// If the FSR dispatch already ran ReShade on the render-resolution input, avoid
 	// running image-processing add-ons or regular effects a second time on the upscaled swapchain.
-	const bool pre_upscale_frame = reshade::consume_pre_upscale_frame();
+	const bool pre_upscale_frame = reshade::consume_pre_upscale_frame(_impl);
 
 	// Synchronize access to effect runtime to avoid race conditions between 'load_effects' and 'destroy_effects' causing crashes
 	// This is necessary because Resident Evil 3 calls D3D11 and DXGI functions simultaneously from multiple threads
