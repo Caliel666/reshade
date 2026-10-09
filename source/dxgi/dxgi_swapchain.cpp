@@ -16,6 +16,7 @@
 #include "com_utils.hpp"
 #include "addon_manager.hpp"
 #include "runtime_manager.hpp"
+#include "fsr_pre_upscale.hpp"
 
 #if RESHADE_ADDON
 extern bool modify_swapchain_desc(reshade::api::device_api api, DXGI_SWAP_CHAIN_DESC &desc, UINT &sync_interval);
@@ -253,6 +254,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::GetDevice(REFIID riid, void **ppDevice)
 
 HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
 {
+	reshade::fsr_pre_upscale::update();
 	on_present(Flags);
 
 	assert(!g_in_dxgi_runtime);
@@ -546,6 +548,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT Presen
 {
 	assert(_interface_version >= 1);
 
+	reshade::fsr_pre_upscale::update();
 	on_present(PresentFlags, pPresentParameters);
 
 	assert(!g_in_dxgi_runtime);
