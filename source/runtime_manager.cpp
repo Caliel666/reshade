@@ -25,6 +25,9 @@ namespace
 {
 	std::atomic<uint64_t> s_pre_upscale_swapchain_native = 0;
 	std::atomic_flag s_logged_pre_upscale_addons = ATOMIC_FLAG_INIT;
+	std::atomic_flag s_logged_pre_upscale_no_runtime = ATOMIC_FLAG_INIT;
+	std::atomic_flag s_logged_pre_upscale_no_rtv = ATOMIC_FLAG_INIT;
+	std::atomic_flag s_logged_pre_upscale_no_present = ATOMIC_FLAG_INIT;
 
 	class pre_upscale_swapchain final : public reshade::api::swapchain
 	{
@@ -194,8 +197,10 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 	if (original_state == 0 && (ffx_resource_state & 1u)) original_state = D3D12_RESOURCE_STATE_COMMON;
 	if (original_state == 0)
 	{
-		reshade::log::message(reshade::log::level::warning,
-			"FSR pre-upscale: unsupported/unknown FFX input resource state 0x%08X; leaving dispatch untouched.", ffx_resource_state);
+		static std::atomic_flag logged_unknown_state = ATOMIC_FLAG_INIT;
+		if (!logged_unknown_state.test_and_set())
+			reshade::log::message(reshade::log::level::warning,
+				"FSR pre-upscale: unsupported/unknown FFX input resource state 0x%08X; leaving dispatch untouched.", ffx_resource_state);
 		native_device->Release();
 		return false;
 	}
@@ -250,7 +255,7 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 						"FSR pre-upscale: could not create an RTV for the input; built-in effects skipped, add-on callbacks will still be routed.");
 				}
 			}
-			else
+			else if (!s_logged_pre_upscale_no_rtv.test_and_set())
 			{
 				reshade::log::message(reshade::log::level::info,
 					"FSR pre-upscale: input texture lacks ALLOW_RENDER_TARGET; built-in effects skipped, add-on callbacks remain eligible.");
@@ -287,7 +292,7 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 					native_list->ResourceBarrier(1, &back_to_original);
 				}
 			}
-			else if (!s_logged_pre_upscale_addons.test_and_set())
+			else if (!s_logged_pre_upscale_no_present.test_and_set())
 			{
 				reshade::log::message(reshade::log::level::warning,
 					"FSR pre-upscale: no ReShade add-on present callbacks are registered; checking built-in effects only.");
@@ -297,6 +302,18 @@ bool reshade::render_effects_on_external_d3d12_resource(void *command_list, void
 				s_pre_upscale_swapchain_native.store(runtime->get_swapchain()->get_native(), std::memory_order_release);
 			break;
 		}
+		bool matching_runtime = false;
+		for (reshade::runtime *runtime : s_runtime_instances)
+			if (runtime != nullptr && runtime->get_device() != nullptr &&
+				runtime->get_device()->get_api() == reshade::api::device_api::d3d12 &&
+				runtime->get_device()->get_native() == reinterpret_cast<uint64_t>(native_device))
+			{
+				matching_runtime = true;
+				break;
+			}
+		if (!matching_runtime && !s_logged_pre_upscale_no_runtime.test_and_set())
+			reshade::log::message(reshade::log::level::warning,
+				"FSR pre-upscale: no ReShade runtime matches FSR input device %p; add-on callback cannot be routed through a swapchain runtime.", native_device);
 	}
 	native_device->Release();
 	return processed;
