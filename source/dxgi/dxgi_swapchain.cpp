@@ -994,7 +994,7 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)),
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)));
 
-		if (!pre_upscale_frame) if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
+		if (!pre_upscale_frame) reshade::invoke_addon_event<reshade::addon_event::present>(
 			static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device)),
 			_impl,
 			nullptr,
