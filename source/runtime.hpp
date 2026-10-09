@@ -34,7 +34,7 @@ namespace reshade
 
 		bool on_init();
 		void on_reset();
-		void on_present();
+		void on_present(bool render_effects = true);
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
 
