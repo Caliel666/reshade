@@ -62,24 +62,48 @@ namespace
 		return original(context, dispatch_description);
 	}
 
-	int ffx_api_dispatch(void *dispatch_header)
+	using ffx_api_dispatch_fn = int (*)(void *context, const void *dispatch_header);
+
+	int ffx_api_dispatch(void *context, const void *dispatch_header)
 	{
-		// The unified FFX API is used by newer integrations, including some FSR 4
-		// paths. Keep the header opaque and forward it without changing its chain.
+		// Unified FidelityFX dispatch ABI is (context, descriptor). The descriptor
+		// header is a 64-bit type followed by pNext. FSR upscale dispatch type is
+		// 0x00010001; its color resource follows the command-list pointer.
+		struct ffx_api_header_prefix { uint64_t type; void *next; };
+		struct ffx_api_resource_prefix { void *resource; };
+		struct ffx_api_upscale_prefix
+		{
+			ffx_api_header_prefix header;
+			void *command_list;
+			ffx_api_resource_prefix color;
+		};
+
 		if (!s_logged_ffx_dispatch.test_and_set())
 		{
 			reshade::log::message(
 				reshade::log::level::info,
-				"FSR pre-upscale: intercepted ffxDispatch (header=%p). Forwarding unchanged; effect execution is not enabled yet.",
-				dispatch_header);
+				"FSR pre-upscale: intercepted ffxDispatch (context=%p, descriptor=%p).",
+				context, dispatch_header);
 		}
 
-		const auto original = reshade::hooks::call< int (*)(void *) >(
-			reinterpret_cast< int (*)(void *) >(&ffx_api_dispatch));
+		if (dispatch_header != nullptr)
+		{
+			const auto *header = static_cast<const ffx_api_header_prefix *>(dispatch_header);
+			if (header->type == 0x00010001ull)
+			{
+				const auto *dispatch = static_cast<const ffx_api_upscale_prefix *>(dispatch_header);
+				if (dispatch->command_list != nullptr && dispatch->color.resource != nullptr &&
+					reshade::render_effects_on_external_d3d12_resource(dispatch->command_list, dispatch->color.resource))
+					reshade::log::message(reshade::log::level::info, "FSR pre-upscale: ReShade effects recorded on unified FFX upscale input color before dispatch.");
+			}
+		}
+
+		const auto original = reshade::hooks::call<ffx_api_dispatch_fn>(
+			reinterpret_cast<ffx_api_dispatch_fn>(&ffx_api_dispatch));
 		if (original == nullptr)
 			return -1;
 
-		return original(dispatch_header);
+		return original(context, dispatch_header);
 	}
 
 	void try_hook_export(HMODULE module, const char *name, void *replacement, const char *description)
