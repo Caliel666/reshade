@@ -12,6 +12,7 @@
 #include <d3d12.h>
 #include <unordered_set>
 #include <cassert>
+#include <atomic>
 
 static std::shared_mutex s_runtime_config_names_mutex;
 static std::unordered_set<std::string> s_runtime_config_names;
