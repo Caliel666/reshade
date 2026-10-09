@@ -14,7 +14,9 @@ namespace reshade
 
 	void init_effect_runtime(api::swapchain *swapchain);
 	void reset_effect_runtime(api::swapchain *swapchain);
-	void present_effect_runtime(api::swapchain *swapchain);
+	void present_effect_runtime(api::swapchain *swapchain, bool render_effects = true);
+	// Returns true once for a frame whose ReShade processing was recorded before FSR.
+	bool consume_pre_upscale_frame();
 
 	// Execute the active ReShade runtime on an FSR render-resolution D3D12 color resource.
 	// Returns false when no compatible runtime/resource is available; the caller must then
