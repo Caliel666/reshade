@@ -117,9 +117,9 @@ void reshade::fsr_pre_upscale::update()
 	// Present runs every frame. Avoid taking a module snapshot every frame;
 	// scan at most once per second to keep the disabled/idle path inexpensive.
 	const ULONGLONG now = GetTickCount64();
-	const ULONGLONG previous = s_last_scan_tick.load(std::memory_order_relaxed);
+	ULONGLONG previous = s_last_scan_tick.load(std::memory_order_relaxed);
 	if (now - previous < 1000 ||
-		!s_last_scan_tick.compare_exchange_strong(const_cast<ULONGLONG &>(previous), now, std::memory_order_relaxed))
+		!s_last_scan_tick.compare_exchange_strong(previous, now, std::memory_order_relaxed))
 		return;
 
 	if (s_scan_in_progress.test_and_set())
