@@ -700,7 +700,8 @@ void reshade::runtime::on_present(bool render_effects)
 
 	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
 
-	capture_state(cmd_list, _app_state);
+	if (render_effects)
+		capture_state(cmd_list, _app_state);
 
 	uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
 	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
@@ -731,7 +732,7 @@ void reshade::runtime::on_present(bool render_effects)
 
 	_current_time = std::chrono::system_clock::now();
 
-	if (_should_save_screenshot && _screenshot_save_before && _effects_enabled && !_effects_rendered_this_frame)
+	if (render_effects && _should_save_screenshot && _screenshot_save_before && _effects_enabled && !_effects_rendered_this_frame)
 		save_screenshot("Before");
 
 	if (render_effects && !is_loading() && !_techniques.empty())
@@ -748,7 +749,7 @@ void reshade::runtime::on_present(bool render_effects)
 		}
 	}
 
-	if (_should_save_screenshot)
+	if (render_effects && _should_save_screenshot)
 		save_screenshot(_screenshot_save_before ? "After" : nullptr);
 
 	_frame_count++;
@@ -932,11 +933,13 @@ void reshade::runtime::on_present(bool render_effects)
 		}
 	}
 
-	// Apply previous state from application
-	apply_state(cmd_list, _app_state);
+	// Restore application state only when this present rendered into its swapchain.
+	if (render_effects)
+		apply_state(cmd_list, _app_state);
 
 #if RESHADE_ADDON
-	invoke_addon_event<addon_event::reshade_present>(this);
+	if (render_effects)
+		invoke_addon_event<addon_event::reshade_present>(this);
 
 	_is_in_present_call = false;
 #endif
